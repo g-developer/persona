@@ -684,3 +684,49 @@ func TestNodeProgramsForgotten(t *testing.T) {
 		t.Fatalf("a state for a plugin that is gone: %+v", v)
 	}
 }
+
+func TestNodePackageConcurrentSamePlatform(t *testing.T) {
+	ctx := context.Background()
+	h, _ := extensionTestHub(t)
+	boxA, seenA := extensionNodeMachine(t, h, "box-a", "darwin", "arm64", false)
+	boxB, seenB := extensionNodeMachine(t, h, "box-b", "darwin", "arm64", false)
+
+	reg := h.extensions.reg
+	pv, err := reg.Preview(ctx, "dir:"+helperPackage(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Install(ctx, pv.ID, pv.Digest, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetConfig(ctx, "example-helper", json.RawMessage(`{"computers": ["box-a", "box-b"]}`), "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for _, m := range []*Machine{boxA, boxB} {
+		wg.Add(1)
+		go func(m *Machine) {
+			defer wg.Done()
+			h.syncExtensionNodes(ctx, m)
+		}(m)
+	}
+	wg.Wait()
+
+	ext := reg.Get("example-helper")
+	pkgA, err := h.extensions.nodePackage(ext, "darwin-arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkgA.size <= 0 || pkgA.digest == "" {
+		t.Fatalf("invalid package: %+v", pkgA)
+	}
+	for _, v := range h.extensions.view(ctx, ext).Nodes {
+		if v.State != "running" || v.Error != "" {
+			t.Fatalf("concurrent same-platform sync failed for %s: %+v", v.MachineID, v)
+		}
+	}
+	if len(seenA()) == 0 || len(seenB()) == 0 {
+		t.Fatalf("expected calls to both machines: a=%d b=%d", len(seenA()), len(seenB()))
+	}
+}

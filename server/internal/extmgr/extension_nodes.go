@@ -46,6 +46,8 @@ type extensionNodes struct {
 	states map[string]map[string]proto.PluginNodeState
 	// packages: "<id>/<version>/<platform>" → the package file sent to machines of that platform.
 	packages map[string]nodePackage
+	// pkgLocks serializes building a package for the same key across concurrent same-platform machines.
+	pkgLocks map[string]*sync.Mutex
 	// syncing: one sync at a time per machine.
 	syncing map[string]*sync.Mutex
 }
@@ -53,6 +55,20 @@ type extensionNodes struct {
 type nodePackage struct {
 	file, digest string
 	size         int64
+}
+
+func (pn *extensionNodes) packageLock(key string) *sync.Mutex {
+	pn.mu.Lock()
+	defer pn.mu.Unlock()
+	if pn.pkgLocks == nil {
+		pn.pkgLocks = map[string]*sync.Mutex{}
+	}
+	l := pn.pkgLocks[key]
+	if l == nil {
+		l = &sync.Mutex{}
+		pn.pkgLocks[key] = l
+	}
+	return l
 }
 
 func (pn *extensionNodes) lock(machine string) *sync.Mutex {
@@ -274,13 +290,35 @@ func (ps *extensions) nodePackage(p *extension.Extension, platform string) (node
 			return pkg, nil
 		}
 	}
+	pl := pn.packageLock(key)
+	pl.Lock()
+	defer pl.Unlock()
+	pn.mu.Lock()
+	pkg, ok = pn.packages[key]
+	pn.mu.Unlock()
+	if ok {
+		if _, err := os.Stat(pkg.file); err == nil {
+			return pkg, nil
+		}
+	}
 	dir := filepath.Join(ps.root, "node-packages")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nodePackage{}, err
 	}
 	file := filepath.Join(dir, p.Record.ID+"-"+p.Record.Version+"-"+platform+".tgz")
-	digest, size, err := extension.NodePackageFile(p.Manifest, p.Dir, platform, file)
+	tmpFile, err := os.CreateTemp(dir, p.Record.ID+"-"+p.Record.Version+"-"+platform+".*.tmp")
 	if err != nil {
+		return nodePackage{}, err
+	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	digest, size, err := extension.NodePackageFile(p.Manifest, p.Dir, platform, tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return nodePackage{}, err
+	}
+	if err := os.Rename(tmpPath, file); err != nil {
+		_ = os.Remove(tmpPath)
 		return nodePackage{}, err
 	}
 	pkg = nodePackage{file: file, digest: digest, size: size}
