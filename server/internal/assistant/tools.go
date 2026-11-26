@@ -1785,6 +1785,9 @@ func (s *Service) describeAgents(ctx context.Context, state, machine, query stri
 			what = "要授权 " + ix.ToolName + "：" + ix.Summary
 		} else if ix.Kind == proto.IxScreen {
 			what = "终端对话框等你处理"
+			if safeScreenDialog(ix) {
+				what = "终端对话框：" + terminalQuestionText(ix) // i18n-ignore: agents_list output for the model
+			}
 		}
 		session := ix.SessionID
 		source := [2]string{ix.MachineID, session}

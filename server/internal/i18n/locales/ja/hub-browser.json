@@ -7,6 +7,7 @@
   "confirm_script": "「{machine}」のブラウザでスクリプトを実行：{line}",
   "rpc_missing": "このMacにego liteがインストールされていません",
   "rpc_setup": "ego liteの初期設定が完了していません",
+  "rpc_unsupported_os": "macOS {current} は ego lite の必要バージョン（{required}）未満のため起動できません",
   "rpc_unknown": "ego-browserが利用できるかまだ不明です",
   "rpc_probe": "ego-browserが正常に動作しませんでした：{detail}",
   "rpc_applications_step": "アプリケーションにインストール中",

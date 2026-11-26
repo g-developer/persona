@@ -17,6 +17,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +28,19 @@ import (
 
 const (
 	// egoTeam is Citro Labs' Developer ID team: an app that is not signed by it is not installed.
-	egoTeam = "JGQLC6YQYJ"
-	egoName = "ego lite"
+	egoTeam                 = "JGQLC6YQYJ"
+	egoName                 = "ego lite"
+	egoMinMacOS             = "13.0"
+	egoUnsupportedOSMessage = "当前 macOS %s 低于 ego lite 要求的 %s，无法运行" // i18n-ignore: canonical node text localized by hub-browser.rpc_unsupported_os
 )
+
+var macOSProductVersion = func(ctx context.Context) string {
+	out, err := exec.CommandContext(ctx, "/usr/bin/sw_vers", "-productVersion").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // egoDMG is the official DMG for this Mac's chip (the download link the project's README gives).
 var egoDMG = func() string {
@@ -78,15 +90,18 @@ var egoProbe struct {
 
 func browserStatus(ctx context.Context) proto.Browser {
 	b := proto.Browser{}
-	if app := egoApp(); app != "" {
+	app := egoApp()
+	if app != "" {
 		b.Installed = true
 		b.Version = plistString(ctx, filepath.Join(app, "Contents", "Info.plist"), "CFBundleShortVersionString")
 	}
 	b.SetUp, b.Imported, b.Analytics = egoSetUp()
-	if b.Installed && b.SetUp && egoBin() != "" {
-		b.Ready, b.Note = probeEgo(ctx)
-	}
-	if !b.Ready || b.Note == "" {
+	if cur, req, bad := egoUnsupportedOS(ctx, app); bad {
+		b.Note = fmt.Sprintf(egoUnsupportedOSMessage, cur, req)
+	} else {
+		if b.Installed && b.SetUp && egoBin() != "" {
+			b.Ready, b.Note = probeEgo(ctx)
+		}
 		b.Note = browserNote(b, b.Note)
 	}
 	b.ScreenSharing = screenSharing(ctx)
@@ -162,6 +177,42 @@ func plistString(ctx context.Context, plist, key string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// versionLess compares dotted numeric versions, treating omitted components as zero.
+// An unreadable version does not establish incompatibility.
+func versionLess(cur, req string) bool {
+	parse := func(version string) []uint64 {
+		parts := strings.Split(strings.TrimSpace(version), ".")
+		numbers := make([]uint64, len(parts))
+		for i, part := range parts {
+			n, err := strconv.ParseUint(part, 10, 64)
+			if err != nil {
+				return nil
+			}
+			numbers[i] = n
+		}
+		for len(numbers) > 0 && numbers[len(numbers)-1] == 0 {
+			numbers = numbers[:len(numbers)-1]
+		}
+		return numbers
+	}
+	a, b := parse(cur), parse(req)
+	return a != nil && b != nil && slices.Compare(a, b) < 0
+}
+
+func egoUnsupportedOS(ctx context.Context, app string) (cur, req string, unsupported bool) {
+	if installOS != "darwin" {
+		return "", "", false
+	}
+	if app != "" {
+		req = plistString(ctx, filepath.Join(app, "Contents", "Info.plist"), "LSMinimumSystemVersion")
+	}
+	if req == "" {
+		req = egoMinMacOS
+	}
+	cur = macOSProductVersion(ctx)
+	return cur, req, versionLess(cur, req)
+}
+
 // ---- install and open ----
 
 // installEgo downloads the official DMG, checks the app in it (signed by Citro Labs' team, notarized), copies it into
@@ -174,11 +225,17 @@ func installEgo(ctx context.Context, step func(string)) error {
 	if egoApp() != "" {
 		return errors.New("已经装好了")
 	}
+	if cur, req, bad := egoUnsupportedOS(ctx, ""); bad {
+		return fmt.Errorf(egoUnsupportedOSMessage, cur, req)
+	}
 	app, done, err := fetchEgo(ctx, step)
 	if err != nil {
 		return err
 	}
 	defer done()
+	if cur, req, bad := egoUnsupportedOS(ctx, app); bad {
+		return fmt.Errorf(egoUnsupportedOSMessage, cur, req)
+	}
 	step("装进「应用程序」")
 	dest := filepath.Join("/Applications", egoName+".app")
 	if out, err := exec.CommandContext(ctx, "/usr/bin/ditto", app, dest).CombinedOutput(); err != nil {
@@ -193,7 +250,7 @@ func installEgo(ctx context.Context, step func(string)) error {
 
 // fetchEgo downloads ego's DMG, mounts it read-only and checks the app in it (verifyEgoApp); done unmounts it and
 // removes the download.
-func fetchEgo(ctx context.Context, step func(string)) (app string, done func(), err error) {
+var fetchEgo = func(ctx context.Context, step func(string)) (app string, done func(), err error) {
 	dir, err := os.MkdirTemp("", "persona-ego-install-")
 	if err != nil {
 		return "", nil, err
@@ -267,6 +324,9 @@ func openEgo(ctx context.Context, step func(string)) error {
 	app := egoApp()
 	if app == "" {
 		return errors.New("这台 Mac 上没有装 ego lite")
+	}
+	if cur, req, bad := egoUnsupportedOS(ctx, app); bad {
+		return fmt.Errorf(egoUnsupportedOSMessage, cur, req)
 	}
 	step("在那台 Mac 上打开 ego lite")
 	if out, err := exec.CommandContext(ctx, "/usr/bin/open", app).CombinedOutput(); err != nil {
