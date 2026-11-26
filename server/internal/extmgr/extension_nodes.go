@@ -46,8 +46,8 @@ type extensionNodes struct {
 	states map[string]map[string]proto.PluginNodeState
 	// packages: "<id>/<version>/<platform>" → the package file sent to machines of that platform.
 	packages map[string]nodePackage
-	// pkgLocks serializes building a package for the same key across concurrent same-platform machines.
-	pkgLocks map[string]*sync.Mutex
+	// pkgLocks holds the build locks for keys with active or waiting builders.
+	pkgLocks map[string]*pkgLockEntry
 	// syncing: one sync at a time per machine.
 	syncing map[string]*sync.Mutex
 }
@@ -57,18 +57,35 @@ type nodePackage struct {
 	size         int64
 }
 
-func (pn *extensionNodes) packageLock(key string) *sync.Mutex {
+type pkgLockEntry struct {
+	mu   sync.Mutex
+	refs int // Includes waiters and is guarded by extensionNodes.mu.
+}
+
+func (pn *extensionNodes) lockPkgBuild(key string) func() {
 	pn.mu.Lock()
-	defer pn.mu.Unlock()
 	if pn.pkgLocks == nil {
-		pn.pkgLocks = map[string]*sync.Mutex{}
+		pn.pkgLocks = map[string]*pkgLockEntry{}
 	}
-	l := pn.pkgLocks[key]
-	if l == nil {
-		l = &sync.Mutex{}
-		pn.pkgLocks[key] = l
+	e := pn.pkgLocks[key]
+	if e == nil {
+		e = &pkgLockEntry{}
+		pn.pkgLocks[key] = e
 	}
-	return l
+	e.refs++
+	pn.mu.Unlock()
+
+	// A builder can acquire pn.mu while holding the build lock.
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		pn.mu.Lock()
+		e.refs--
+		if e.refs == 0 && pn.pkgLocks[key] == e {
+			delete(pn.pkgLocks, key)
+		}
+		pn.mu.Unlock()
+	}
 }
 
 func (pn *extensionNodes) lock(machine string) *sync.Mutex {
@@ -290,9 +307,8 @@ func (ps *extensions) nodePackage(p *extension.Extension, platform string) (node
 			return pkg, nil
 		}
 	}
-	pl := pn.packageLock(key)
-	pl.Lock()
-	defer pl.Unlock()
+	unlockBuild := pn.lockPkgBuild(key)
+	defer unlockBuild()
 	pn.mu.Lock()
 	pkg, ok = pn.packages[key]
 	pn.mu.Unlock()
