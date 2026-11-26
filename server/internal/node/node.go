@@ -2856,6 +2856,7 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 	case "computer.status", "computer.call", "computer.install", "computer.grant", "computer.cancel", "computer.clipboard",
 		"computer.cursor", "computer.nolock", "computer.lock",
 		"browser.status", "browser.install", "browser.open", "browser.cancel", "browser.call",
+		"browser.download_info", "browser.download_chunk",
 		"browser.cookies.list", "browser.cookies.import", "browser.cookies.clear":
 		return legacyBuiltinCall(ctx, method, params, n.lcuComputerCall)
 	case methodFsStat: // detail: the Info sheet (files_info.go)

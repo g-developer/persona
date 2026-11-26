@@ -8,6 +8,8 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +55,141 @@ var egoDMG = func() string {
 
 // egoHome is where ego keeps its things; tests point it elsewhere.
 var egoHome = func() string { h, _ := os.UserHomeDir(); return h }
+
+func browserDownloadsDir() string { return filepath.Join(egoHome(), "Downloads") }
+
+func resolveBrowserDownload(filename string) (string, os.FileInfo, error) {
+	if filename == "" || filename == "." || filename == ".." ||
+		strings.ContainsAny(filename, "/\\\x00") || filepath.Base(filename) != filename {
+		return "", nil, errors.New("give the exact filename in Downloads, without a directory")
+	}
+	dir := browserDownloadsDir()
+	if !filepath.IsAbs(dir) {
+		return "", nil, errors.New("cannot locate Downloads: the home directory is unavailable")
+	}
+	dirReal, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", nil, browserDownloadError(fmt.Errorf("locate Downloads: %w", err))
+	}
+	path := filepath.Join(dir, filename)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", nil, browserDownloadError(fmt.Errorf("find %q in Downloads: %w", filename, err))
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", nil, errors.New("only regular files in Downloads can be retrieved")
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", nil, browserDownloadError(fmt.Errorf("check Downloads: %w", err))
+	}
+	if parent != dirReal {
+		return "", nil, errors.New("the Downloads directory changed")
+	}
+	if info.Size() > proto.MaxTerminalUploadBytes {
+		return "", nil, fmt.Errorf("the download is larger than %d bytes", proto.MaxTerminalUploadBytes)
+	}
+	return filepath.Join(dirReal, filename), info, nil
+}
+
+func browserDownloadError(err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("macOS Downloads access was denied (EPERM or EACCES). Allow Persona Link to access Downloads in System Settings > Privacy & Security > Files and Folders: %w", err)
+	}
+	return err
+}
+
+func openBrowserDownload(filename string) (*os.File, os.FileInfo, error) {
+	path, info, err := resolveBrowserDownload(filename)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, err := openNoBlock(path)
+	if err != nil {
+		return nil, nil, browserDownloadError(fmt.Errorf("open %q in Downloads: %w", filename, err))
+	}
+	if err := checkBrowserDownload(f, info); err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return f, info, nil
+}
+
+func checkBrowserDownload(f *os.File, info os.FileInfo) error {
+	current, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !sameFileRead(info, current) {
+		return errFileChanged
+	}
+	return nil
+}
+
+func browserDownloadInfo(params json.RawMessage) (proto.BrowserDownloadInfo, error) {
+	var p struct {
+		Filename string `json:"filename"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return proto.BrowserDownloadInfo{}, fmt.Errorf("bad download info params: %w", err)
+	}
+	f, info, err := openBrowserDownload(p.Filename)
+	if err != nil {
+		return proto.BrowserDownloadInfo{}, err
+	}
+	defer f.Close()
+	digest := sha256.New()
+	size, err := io.Copy(digest, io.LimitReader(f, info.Size()+1))
+	if err != nil {
+		return proto.BrowserDownloadInfo{}, browserDownloadError(err)
+	}
+	if size != info.Size() {
+		return proto.BrowserDownloadInfo{}, errFileChanged
+	}
+	if err := checkBrowserDownload(f, info); err != nil {
+		return proto.BrowserDownloadInfo{}, err
+	}
+	return proto.BrowserDownloadInfo{Name: p.Filename, Path: f.Name(), Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
+}
+
+func browserDownloadChunk(params json.RawMessage) (proto.BrowserDownloadChunk, error) {
+	var p struct {
+		Filename string `json:"filename"`
+		Offset   int64  `json:"offset"`
+		Length   int    `json:"length"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return proto.BrowserDownloadChunk{}, fmt.Errorf("bad download chunk params: %w", err)
+	}
+	if p.Offset < 0 {
+		return proto.BrowserDownloadChunk{}, errors.New("download offset cannot be negative")
+	}
+	f, info, err := openBrowserDownload(p.Filename)
+	if err != nil {
+		return proto.BrowserDownloadChunk{}, err
+	}
+	defer f.Close()
+	if p.Offset > info.Size() {
+		return proto.BrowserDownloadChunk{}, errors.New("download offset is outside the file")
+	}
+	if p.Length <= 0 || p.Length > proto.FileDownloadChunkBytes {
+		p.Length = proto.FileDownloadChunkBytes
+	}
+	data := make([]byte, min(int64(p.Length), info.Size()-p.Offset))
+	n, err := f.ReadAt(data, p.Offset)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return proto.BrowserDownloadChunk{}, browserDownloadError(err)
+	}
+	if n != len(data) {
+		return proto.BrowserDownloadChunk{}, errFileChanged
+	}
+	if err := checkBrowserDownload(f, info); err != nil {
+		return proto.BrowserDownloadChunk{}, err
+	}
+	return proto.BrowserDownloadChunk{
+		Name: p.Filename, Offset: p.Offset, Size: info.Size(), Data: data, EOF: p.Offset+int64(n) == info.Size(),
+	}, nil
+}
 
 // egoApp is the installed app, "" when there is none.
 var egoApp = func() string {

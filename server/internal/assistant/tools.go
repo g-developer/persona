@@ -464,6 +464,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			// i18n-ignore: original MCP refusal for the model, not API error, push or approval-card copy; keep the source reason verbatim.
 			return "", fmt.Errorf("这个 Agent 仅支持查看：%s", c.ReadOnlyReason)
 		}
+		if err := s.externalSessionRefusal(ctx, self, am, c); err != nil {
+			return "", err
+		}
 		if strings.TrimSpace(a.Text) == "" {
 			return "", fmt.Errorf("text is empty")
 		}
@@ -546,6 +549,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 				s.rollbackResumeTodo(context.WithoutCancel(ctx), resumeTodo, am.ID, c.SessionID)
 			}
 			return outboundNotDone(outcome, "The user declined on the phone: nothing was sent to that agent.", "nothing was sent to that agent"), nil
+		}
+		if err := s.externalSessionRefusal(ctx, self, am, c); err != nil {
+			return "", err
 		}
 		var task *handedTask
 		if a.Task != nil {
