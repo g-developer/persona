@@ -221,17 +221,17 @@ func TestEgoSetUpIsReadFromItsLocalState(t *testing.T) {
 }
 
 func TestBrowserScriptWrapsTheAssistants(t *testing.T) {
-	s := browserScript("persona-1a2b3c4d", "await page.goto(\"https://example.com\");\nreturn 1;", false, false, true, "/tmp/x/page.png")
+	s := browserScript("persona-1a2b3c4d", "await page.goto(\"https://example.com\");\nreturn 1;", false, false, true, "/tmp/x/page.png", "")
 	for _, want := range []string{`taskSpace("persona-1a2b3c4d")`, `task.page("p1")`, "return 1;", `page.screenshot({ path: "/tmp/x/page.png" })`, "__r.error"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("no %q in\n%s", want, s)
 		}
 	}
-	look := browserScript("persona-1", "", true, true, true, "/tmp/x/page.png")
+	look := browserScript("persona-1", "", true, true, true, "/tmp/x/page.png", "")
 	if !strings.Contains(look, `page.snapshot({ scope: "full_page" })`) || strings.Contains(look, "__r.value") {
 		t.Fatal(look)
 	}
-	viewport := browserScript("persona-1", "", true, false, false, "/tmp/x/page.png")
+	viewport := browserScript("persona-1", "", true, false, false, "/tmp/x/page.png", "")
 	if !strings.Contains(viewport, `page.snapshot({ scope: "only_within_viewport" })`) {
 		t.Fatalf("ego's viewport scope: %s", viewport)
 	}
@@ -256,7 +256,17 @@ case "$script" in *throwme*) echo "TypeError: nope" >&2; exit 1 ;; esac
 printf 'log line\n'
 printf '@@persona-browser@@{"value":"done","url":"https://example.com/","title":"Example Domain"}\n'
 `
-	fakeEgoHome(t, true, false, false, cli)
+	home := fakeEgoHome(t, true, false, false, cli)
+	downloads := filepath.Join(home, ".persona", "browser-downloads")
+	if got := browserDownloadsDir(); got != downloads {
+		t.Errorf("browser downloads directory = %q, want %q", got, downloads)
+	}
+	if _, err := browserCall(t.Context(), json.RawMessage(`{"session": "persona-1", "look": true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(downloads); !os.IsNotExist(err) {
+		t.Fatalf("look call should leave the downloads directory absent: %v", err)
+	}
 	res, err := browserCall(context.Background(), json.RawMessage(`{"session": "persona-1", "script": "return 'done'"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -264,6 +274,11 @@ printf '@@persona-browser@@{"value":"done","url":"https://example.com/","title":
 	var out map[string]any
 	if json.Unmarshal(res.Output, &out) != nil || out["value"] != "done" || out["console"] != "log line" || out["title"] != "Example Domain" {
 		t.Fatalf("%s", res.Output)
+	}
+	if info, err := os.Stat(downloads); err != nil {
+		t.Error(err)
+	} else if !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
+		t.Errorf("browser downloads directory has mode %v, want a private directory", info.Mode())
 	}
 	if _, err := browserCall(context.Background(), json.RawMessage(`{"session": "persona-1", "script": "throwme"}`)); err == nil || !strings.Contains(err.Error(), "TypeError: nope") {
 		t.Fatalf("what it said: %v", err)

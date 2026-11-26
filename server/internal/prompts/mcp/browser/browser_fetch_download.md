@@ -1,4 +1,4 @@
-Retrieve a completed browser download by its exact filename in Downloads on the named personal Mac. If this conversation runs on another connected personal computer, Persona copies the file there and returns its local path. On the same computer, it returns the original path. Files up to 50 MiB are supported. The user may be asked to confirm first.{{template "shared/mcp_language" .}}
+Retrieve a completed `browser_run` download by its exact filename in Persona's managed browser downloads directory on the named personal Mac. If this conversation runs on another connected personal computer, Persona copies the file there and returns its local path. On the same computer, it returns the original path. Files up to 50 MiB are supported. The user may be asked to confirm first.{{template "shared/mcp_language" .}}
 
 ```json
 {
@@ -11,7 +11,7 @@ Retrieve a completed browser download by its exact filename in Downloads on the 
     },
     "filename": {
       "type": "string",
-      "description": "the exact filename in Downloads, without a directory"
+      "description": "the exact filename in Persona's browser downloads directory, without a directory path"
     }
   }
 }

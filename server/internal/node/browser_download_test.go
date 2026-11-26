@@ -20,11 +20,73 @@ func browserDownloadNode(t *testing.T) (*Node, string) {
 	n, home := testNode(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	dir := filepath.Join(home, "Downloads")
-	if err := os.Mkdir(dir, 0o700); err != nil {
+	dir := filepath.Join(home, ".persona", "browser-downloads")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return n, dir
+}
+
+func TestBrowserDownloadDirectoryResolvesSymlink(t *testing.T) {
+	fakeEgoHome(t, false, false, false, "")
+	dir, target := browserDownloadsDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, dir); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ensureBrowserDownloadsDir(); err != nil || got != want {
+		t.Fatalf("managed download directory = %q, want %q: %v", got, want, err)
+	}
+	const name = "report.txt"
+	if err := os.WriteFile(filepath.Join(target, name), []byte("report"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := resolveBrowserDownload(name); err != nil || got != filepath.Join(want, name) {
+		t.Fatalf("resolve browser download = %q: %v", got, err)
+	}
+	if err := os.Rename(target, target+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ensureBrowserDownloadsDir(); err == nil {
+		t.Fatalf("accepted dangling download directory symlink: %q", got)
+	}
+}
+
+func TestBrowserDownloadDirectoryRequiresAbsoluteHome(t *testing.T) {
+	for _, home := range []string{"", "relative"} {
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		if got, err := ensureBrowserDownloadsDir(); err == nil {
+			t.Errorf("accepted home %q as download directory %q", home, got)
+		}
+	}
+}
+
+func TestBrowserDownloadScriptConfiguresInitialAndNewPages(t *testing.T) {
+	const dir = "/tmp/dl"
+	const command = `p.cdp("Page.setDownloadBehavior", { behavior: "allow", downloadPath: __dlDir })`
+	run := browserScript("persona-1", "return 1;", false, false, false, "", dir)
+	for _, want := range []string{
+		"const page = task.page(\"p1\");\nconst __dlDir = \"/tmp/dl\";",
+		command, "await __bindDl(page);", "task.newPage.bind(task)", "task.newPage = async", "await __bindDl(p);",
+	} {
+		if !strings.Contains(run, want) {
+			t.Errorf("missing %q from browser script:\n%s", want, run)
+		}
+	}
+	look := browserScript("persona-1", "", true, false, false, "", dir)
+	if strings.Contains(look, "Page.setDownloadBehavior") || strings.Contains(look, "task.newPage") {
+		t.Fatalf("look script configures downloads:\n%s", look)
+	}
 }
 
 func TestBrowserDownloadInfoAndChunks(t *testing.T) {
@@ -152,7 +214,7 @@ func TestBrowserDownloadPermissionError(t *testing.T) {
 		t.Helper()
 		for _, method := range []string{"browser.download_info", "browser.download_chunk"} {
 			_, err := pluginCall(t, n, method, map[string]any{"filename": name})
-			if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "macOS") || !strings.Contains(err.Error(), "Downloads") {
+			if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "Persona browser downloads") {
 				t.Errorf("%s missing actionable permission error: %v", method, err)
 			}
 		}

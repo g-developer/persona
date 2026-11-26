@@ -56,47 +56,55 @@ var egoDMG = func() string {
 // egoHome is where ego keeps its things; tests point it elsewhere.
 var egoHome = func() string { h, _ := os.UserHomeDir(); return h }
 
-func browserDownloadsDir() string { return filepath.Join(egoHome(), "Downloads") }
+func browserDownloadsDir() string { return filepath.Join(egoHome(), ".persona", "browser-downloads") }
+
+func ensureBrowserDownloadsDir() (string, error) {
+	dir := browserDownloadsDir()
+	if !filepath.IsAbs(dir) {
+		return "", errors.New("cannot locate Persona browser downloads: the home directory is unavailable")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create Persona browser downloads directory: %w", err)
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("locate Persona browser downloads: %w", err)
+	}
+	return real, nil
+}
 
 func resolveBrowserDownload(filename string) (string, os.FileInfo, error) {
 	if filename == "" || filename == "." || filename == ".." ||
 		strings.ContainsAny(filename, "/\\\x00") || filepath.Base(filename) != filename {
-		return "", nil, errors.New("give the exact filename in Downloads, without a directory")
+		return "", nil, errors.New("give the exact filename in Persona browser downloads, without a directory")
 	}
 	dir := browserDownloadsDir()
 	if !filepath.IsAbs(dir) {
-		return "", nil, errors.New("cannot locate Downloads: the home directory is unavailable")
+		return "", nil, errors.New("cannot locate Persona browser downloads: the home directory is unavailable")
 	}
 	dirReal, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return "", nil, browserDownloadError(fmt.Errorf("locate Downloads: %w", err))
+		return "", nil, fmt.Errorf("locate Persona browser downloads: %w", err)
 	}
 	path := filepath.Join(dir, filename)
 	info, err := os.Lstat(path)
 	if err != nil {
-		return "", nil, browserDownloadError(fmt.Errorf("find %q in Downloads: %w", filename, err))
+		return "", nil, fmt.Errorf("find %q in Persona browser downloads: %w", filename, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", nil, errors.New("only regular files in Downloads can be retrieved")
+		return "", nil, errors.New("only regular files in Persona browser downloads can be retrieved")
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil {
-		return "", nil, browserDownloadError(fmt.Errorf("check Downloads: %w", err))
+		return "", nil, fmt.Errorf("check Persona browser downloads directory: %w", err)
 	}
 	if parent != dirReal {
-		return "", nil, errors.New("the Downloads directory changed")
+		return "", nil, errors.New("the Persona browser downloads directory changed")
 	}
 	if info.Size() > proto.MaxTerminalUploadBytes {
 		return "", nil, fmt.Errorf("the download is larger than %d bytes", proto.MaxTerminalUploadBytes)
 	}
 	return filepath.Join(dirReal, filename), info, nil
-}
-
-func browserDownloadError(err error) error {
-	if errors.Is(err, os.ErrPermission) {
-		return fmt.Errorf("macOS Downloads access was denied (EPERM or EACCES). Allow Persona Link to access Downloads in System Settings > Privacy & Security > Files and Folders: %w", err)
-	}
-	return err
 }
 
 func openBrowserDownload(filename string) (*os.File, os.FileInfo, error) {
@@ -106,7 +114,7 @@ func openBrowserDownload(filename string) (*os.File, os.FileInfo, error) {
 	}
 	f, err := openNoBlock(path)
 	if err != nil {
-		return nil, nil, browserDownloadError(fmt.Errorf("open %q in Downloads: %w", filename, err))
+		return nil, nil, fmt.Errorf("open %q in Persona browser downloads: %w", filename, err)
 	}
 	if err := checkBrowserDownload(f, info); err != nil {
 		f.Close()
@@ -141,7 +149,7 @@ func browserDownloadInfo(params json.RawMessage) (proto.BrowserDownloadInfo, err
 	digest := sha256.New()
 	size, err := io.Copy(digest, io.LimitReader(f, info.Size()+1))
 	if err != nil {
-		return proto.BrowserDownloadInfo{}, browserDownloadError(err)
+		return proto.BrowserDownloadInfo{}, fmt.Errorf("read %q in Persona browser downloads: %w", p.Filename, err)
 	}
 	if size != info.Size() {
 		return proto.BrowserDownloadInfo{}, errFileChanged
@@ -178,7 +186,7 @@ func browserDownloadChunk(params json.RawMessage) (proto.BrowserDownloadChunk, e
 	data := make([]byte, min(int64(p.Length), info.Size()-p.Offset))
 	n, err := f.ReadAt(data, p.Offset)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return proto.BrowserDownloadChunk{}, browserDownloadError(err)
+		return proto.BrowserDownloadChunk{}, fmt.Errorf("read %q in Persona browser downloads: %w", p.Filename, err)
 	}
 	if n != len(data) {
 		return proto.BrowserDownloadChunk{}, errFileChanged
@@ -499,13 +507,21 @@ func browserCall(ctx context.Context, params json.RawMessage) (*proto.ComputerRe
 	if p.Session == "" || (!p.Look && strings.TrimSpace(p.Script) == "") {
 		return nil, errors.New("browser.call: need a session and a script")
 	}
+	var dlDir string
+	if !p.Look {
+		var err error
+		dlDir, err = ensureBrowserDownloadsDir()
+		if err != nil {
+			return nil, err
+		}
+	}
 	dir, err := os.MkdirTemp("", "persona-browser-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
 	shot := filepath.Join(dir, "page.png")
-	wrapped := browserScript(p.Session, p.Script, p.Look, p.Full, p.Screenshot || p.Look, shot)
+	wrapped := browserScript(p.Session, p.Script, p.Look, p.Full, p.Screenshot || p.Look, shot, dlDir)
 	timeout := time.Duration(p.TimeoutMS) * time.Millisecond
 	if timeout <= 0 || timeout > 2*time.Minute {
 		timeout = time.Minute
@@ -607,10 +623,20 @@ const browserMark = "@@persona-browser@@"
 // browserScript wraps the assistant's script: the task space and its first tab, the script as the body of an async
 // function, and one last line with what it returned (or threw), the page's address and title, and the snapshot when
 // it is a look.
-func browserScript(session, script string, look, full, screenshot bool, shot string) string {
+func browserScript(session, script string, look, full, screenshot bool, shot, dlDir string) string {
 	var b strings.Builder
 	b.WriteString("const task = await taskSpace(" + jsString(session) + ");\n")
 	b.WriteString("const page = task.page(\"p1\");\n")
+	if !look && dlDir != "" {
+		b.WriteString("const __dlDir = " + jsString(dlDir) + ";\n")
+		b.WriteString(`const __bindDl = async (p) => { try { await p.cdp("Page.setDownloadBehavior", { behavior: "allow", downloadPath: __dlDir }); } catch (e) {} };
+await __bindDl(page);
+try {
+  const __origNewPage = task.newPage.bind(task);
+  task.newPage = async (...args) => { const p = await __origNewPage(...args); await __bindDl(p); return p; };
+} catch (e) {}
+`)
+	}
 	b.WriteString("const __r = {};\n")
 	b.WriteString("try {\n")
 	if look {

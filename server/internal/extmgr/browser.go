@@ -251,7 +251,7 @@ func (h *Manager) fetchBrowserDownload(ctx context.Context, callerMachine, sessi
 	}
 	if a.Filename == "" || a.Filename == "." || a.Filename == ".." ||
 		strings.ContainsAny(a.Filename, "/\\\x00") || filepath.Base(a.Filename) != a.Filename {
-		return proto.TextResult("give the exact filename in Downloads, without a directory", true)
+		return proto.TextResult("give the exact filename in Persona browser downloads, without a directory", true)
 	}
 	src, err := h.browserMachine(a.Machine)
 	if err != nil {

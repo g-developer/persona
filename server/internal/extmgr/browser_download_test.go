@@ -18,7 +18,7 @@ import (
 const (
 	browserDownloadTool = "browser_fetch_download"
 	testDownloadName    = "report.bin"
-	testDownloadPath    = "/home/example/Downloads/report.bin"
+	testDownloadPath    = "/home/example/.persona/browser-downloads/report.bin"
 	testUploadedPath    = "/home/example/uploads/report.bin"
 )
 
