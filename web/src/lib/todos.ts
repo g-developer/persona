@@ -868,9 +868,10 @@ export function waitingLine(todo: Todo, lookup?: SessionLookup): string | undefi
   return undefined;
 }
 
-/** The agent stopped on a model API error (the hub's turn_error): cut off, not finished (#1516). */
+/** The agent stopped on a model API error (the hub's turn_error): cut off, not finished (#1516).
+ *  A deferred work-card decision settles that turn's failure for the owner. */
 export function interruptedAgent(s?: Session): boolean {
-  if (!s?.turn_error || usageLimitAgent(s)) return false;
+  if (!s?.turn_error || s.work?.deferred || usageLimitAgent(s)) return false;
   const st = activityOf(s);
   return st === "unread" || st === "idle";
 }

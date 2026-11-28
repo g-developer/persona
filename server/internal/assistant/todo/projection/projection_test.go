@@ -318,3 +318,41 @@ func TestRunAskKindAndRiskFromItsCard(t *testing.T) {
 		}
 	}
 }
+
+func TestDeferredWorkCardDoesNotKeepTodoInterrupted(t *testing.T) {
+	baseSession := func(deferred bool) proto.Session {
+		return proto.Session{
+			MachineID:     "m4",
+			SessionID:     "s1",
+			State:         proto.StateIdle,
+			StateSince:    hours(-2),
+			UpdatedAt:     hours(-2),
+			TurnError:     "There's an issue with the selected model (provider/missing-model).",
+			TurnErrorCode: proto.TurnErrorModelRoute,
+			Work: &proto.WorkState{
+				Phase:    proto.WorkBlocked,
+				On:       proto.WaitUser,
+				Deferred: deferred,
+			},
+		}
+	}
+
+	activeErr := Facts{
+		ID:        "todo_err",
+		Title:     "Broken model active",
+		CreatedAt: hours(-3),
+		UpdatedAt: hours(-2),
+		Origin:    "conv_main",
+		Agents:    []Agent{{MachineID: "m4", SessionID: "s1", Title: "Broken run"}},
+		Sessions:  []proto.Session{baseSession(false)},
+	}
+	if v := View(activeErr, testNow); v.Section != assistantwire.TodoListSectionNeedsYou || v.Reason != assistantwire.TodoReasonInterrupted {
+		t.Fatalf("non-deferred broken model view = %+v, want needs_you/interrupted", v)
+	}
+
+	deferredErr := activeErr
+	deferredErr.Sessions = []proto.Session{baseSession(true)}
+	if v := View(deferredErr, testNow); v.Section == assistantwire.TodoListSectionNeedsYou || v.Reason == assistantwire.TodoReasonInterrupted {
+		t.Fatalf("deferred broken model remained needs_you/interrupted: %+v", v)
+	}
+}

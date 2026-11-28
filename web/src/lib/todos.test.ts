@@ -970,6 +970,25 @@ describe("模型服务出错中断的任务 (#1516)", () => {
       expect(todoStatus(todo, makeSessionLookup([s]))).toBe("interrupted");
     }
   });
+
+  it("用户在工作卡点先不管后，旧的 turn_error 不再让任务停留在已中断", () => {
+    const active = mockSession("mac-1", "s1", "idle", {
+      turn_error: cut,
+      turn_error_code: "model_route",
+      work: { phase: "blocked", on: "user", deferred: false },
+    });
+    expect(interruptedAgent(active)).toBe(true);
+    expect(todoStatus(todo, makeSessionLookup([active]))).toBe("interrupted");
+
+    const deferred = mockSession("mac-1", "s1", "idle", {
+      turn_error: cut,
+      turn_error_code: "model_route",
+      work: { phase: "blocked", on: "user", deferred: true },
+    });
+    expect(interruptedAgent(deferred)).toBe(false);
+    expect(interruption(deferred)).toBeUndefined();
+    expect(todoStatus(todo, makeSessionLookup([deferred]))).not.toBe("interrupted");
+  });
 });
 
 describe("任务卡片的进度 (taskNow, #1583)", () => {

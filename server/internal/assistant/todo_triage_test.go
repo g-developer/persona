@@ -373,3 +373,42 @@ func TestPRFactsCannotReopenCompletedTasks(t *testing.T) {
 		})
 	}
 }
+
+func TestTriageDeferredWorkCardNotInterrupted(t *testing.T) {
+	now := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	td := Todo{
+		ID:        "t-deferred",
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now,
+		Origin:    "main",
+		Agents:    []TodoAgent{{MachineID: "m4", SessionID: "s1"}},
+	}
+	base := proto.Session{
+		MachineID:     "m4",
+		SessionID:     "s1",
+		State:         proto.StateIdle,
+		Status:        proto.StatusDone,
+		TurnError:     "There's an issue with the selected model (provider/missing-model).",
+		TurnErrorCode: proto.TurnErrorModelRoute,
+		Work: &proto.WorkState{
+			Phase:    proto.WorkBlocked,
+			On:       proto.WaitUser,
+			Deferred: false,
+		},
+	}
+	if !triageInterrupted(base, now) {
+		t.Fatalf("expected non-deferred session to report triageInterrupted=true")
+	}
+	if got := triageStatus(td, lookupOf([]proto.Session{base}), now); got != "interrupted" {
+		t.Fatalf("non-deferred status = %q, want interrupted", got)
+	}
+
+	deferred := base
+	deferred.Work = &proto.WorkState{Phase: proto.WorkBlocked, On: proto.WaitUser, Deferred: true}
+	if triageInterrupted(deferred, now) {
+		t.Fatalf("expected deferred session to report triageInterrupted=false")
+	}
+	if got := triageStatus(td, lookupOf([]proto.Session{deferred}), now); got == "interrupted" {
+		t.Fatalf("deferred session kept triageStatus=interrupted")
+	}
+}

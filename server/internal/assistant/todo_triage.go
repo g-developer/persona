@@ -123,7 +123,7 @@ func triageUsageLimit(s proto.Session, now time.Time) bool {
 
 // triageInterrupted: cut off by a model error, not a usage limit (the web's interruptedAgent).
 func triageInterrupted(s proto.Session, now time.Time) bool {
-	if s.TurnError == "" || triageUsageLimit(s, now) {
+	if s.TurnError == "" || (s.Work != nil && s.Work.Deferred) || triageUsageLimit(s, now) {
 		return false
 	}
 	st := triageStateOf(s)

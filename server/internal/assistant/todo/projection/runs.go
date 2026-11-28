@@ -313,8 +313,9 @@ func usageLimited(s proto.Session, now time.Time) bool {
 }
 
 // interrupted: cut off by a model error that is not a usage limit, and that the hub does not retry by itself.
+// A deferred work-card decision settles that turn's failure for the owner.
 func interrupted(s proto.Session, now time.Time) bool {
-	if s.TurnError == "" || usageLimited(s, now) || retrying(s, now) {
+	if s.TurnError == "" || (s.Work != nil && s.Work.Deferred) || usageLimited(s, now) || retrying(s, now) {
 		return false
 	}
 	st := stateOf(s)
