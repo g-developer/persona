@@ -171,6 +171,9 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 		if err != nil {
 			return "", err
 		}
+		if err := verifyParkTarget(strings.TrimSpace(a.TodoID), p.Evidence); err != nil {
+			return "", err
+		}
 		park = p
 	} else if strings.TrimSpace(a.Until) != "" || strings.TrimSpace(a.WaitingOn) != "" || a.Evidence != nil {
 		return "", fmt.Errorf("until, waiting_on and evidence apply to parked only")
